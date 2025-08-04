@@ -2,6 +2,10 @@ import json, os, random, time
 from datetime import datetime
 from instagrapi import Client
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+import subprocess
+
+# Ensure Playwright browsers are installed on startup
+subprocess.run(["playwright", "install"], check=False)
 
 VIDEO_FILENAME = "video.mp4"
 SESSION_FILE = "ig_session.json"
