@@ -18,7 +18,7 @@ def log(step):
     print(f"[STEP] {step}")
 
 def login_instagram():
-    log("Logging in to Instagram...")
+    log("📲 Logging in to Instagram...")
     cl = Client()
     if os.path.exists(SESSION_FILE):
         try:
@@ -34,7 +34,7 @@ def login_instagram():
     return cl
 
 def generate_video_on_gemini(prompt="Liminal space with ambient music, no people, surreal dreamlike vibe."):
-    log("Starting Gemini video generation...")
+    log("🎨 Starting Gemini video generation...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
@@ -43,16 +43,23 @@ def generate_video_on_gemini(prompt="Liminal space with ambient music, no people
             context.add_cookies(json.load(f))
 
         page = context.new_page()
-        page.goto("https://gemini.google.com/app")
+        log("🌐 Navigating to Gemini Veo...")
+        page.goto("https://gemini.google.com/app/veo")
 
         if "accounts.google.com" in page.url:
             raise Exception("Gemini session expired. Update cookies.json")
 
-        prompt_box = page.locator('div[contenteditable="true"][role="textbox"]')
-        prompt_box.fill(prompt)
-        prompt_box.press("Enter")
+        log("🧠 Typing prompt...")
+        try:
+            page.wait_for_selector('div[contenteditable="true"][role="textbox"]', timeout=15000)
+            prompt_box = page.locator('div[contenteditable="true"][role="textbox"]')
+            prompt_box.click()
+            prompt_box.fill(prompt)
+            prompt_box.press("Enter")
+        except:
+            raise Exception("❌ Could not find Veo prompt box.")
 
-        log("Waiting for video to appear...")
+        log("🕒 Waiting for preview to appear...")
         page.wait_for_timeout(10000)
 
         try:
@@ -61,6 +68,7 @@ def generate_video_on_gemini(prompt="Liminal space with ambient music, no people
             if not preview:
                 raise Exception("❌ No preview element found.")
             preview.click()
+            log("🎬 Preview clicked.")
             page.wait_for_timeout(4000)
         except:
             page.screenshot(path="veo_fail_preview.png")
@@ -96,31 +104,43 @@ def get_caption():
     return random.choice(CAPTION_BANK)
 
 def post_to_instagram():
-    log("Preparing Instagram upload...")
+    log("📤 Preparing Instagram upload...")
     cl = login_instagram()
     caption = get_caption()
     cl.clip_upload(VIDEO_FILENAME, caption)
     log("✅ Video posted to Instagram.")
 
 def run_once():
+    log("🔁 Starting run_once() loop...")
     try:
         generate_video_on_gemini()
         post_to_instagram()
     except Exception as e:
         print("❌", str(e))
 
-def schedule_posts(n=3):
-    hours = sorted(random.sample(range(24), n))
-    log(f"Scheduled to post at hours: {hours}")
+def schedule_posts():
+    posted_today = 0
+    post_times = sorted(random.sample(range(6, 23), random.randint(1, 4)))
+    log(f"🕒 Scheduled random post hours today: {post_times}")
+    today = datetime.now().day
+
     while True:
-        now = datetime.now().hour
-        if now in hours:
-            log(f"🕒 Time matched ({now}). Running bot...")
+        now = datetime.now()
+        if now.day != today:
+            post_times = sorted(random.sample(range(6, 23), random.randint(1, 4)))
+            today = now.day
+            posted_today = 0
+            log(f"🌅 New day! Scheduled post times: {post_times}")
+
+        if now.hour in post_times and posted_today < len(post_times):
+            log(f"📸 Time matched: hour {now.hour}. Running bot...")
             run_once()
+            posted_today += 1
             time.sleep(3600)
         else:
             time.sleep(300)
 
 if __name__ == "__main__":
+    log("🚀 First-time launch: posting immediately...")
     run_once()
-    schedule_posts(random.randint(1, 4))
+    schedule_posts()
