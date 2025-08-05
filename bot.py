@@ -3,6 +3,7 @@ import random
 import time
 import schedule
 import logging
+import requests
 from instagrapi import Client
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -16,24 +17,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
-PROMPT = 'A dreamy, empty hallway lit by flickering neon, no people, silent, liminal space'
-RAW_FILE = 'raw.png'
-OUT_FILE = 'insta.png'
-CROP_BOTTOM = 50               # px to chop off bottom watermark
+PROMPT        = 'A dreamy, empty hallway lit by flickering neon, no people, silent, liminal space'
+RAW_FILE      = 'raw.png'
+OUT_FILE      = 'insta.png'
+CROP_BOTTOM   = 50               # px to chop off bottom watermark
 USER_DATA_DIR = 'playwright_user_data'
-HEADLESS = os.getenv('HEADLESS', 'true').lower() == 'true'
-POST_COUNT = 3                 # max posts per day
+HEADLESS      = os.getenv('HEADLESS', 'true').lower() == 'true'
+POST_COUNT    = 3                # max posts per day
 
 # ─── LOAD & CHECK ENV ──────────────────────────────────────────────────────────
 USER = os.getenv('INSTAGRAM_USERNAME')
 PASS = os.getenv('INSTAGRAM_PASSWORD')
-logger.debug('Env INSTAGRAM_USERNAME=%s', 'SET' if USER else 'NOT SET')
-logger.debug('Env INSTAGRAM_PASSWORD=%s', 'SET' if PASS else 'NOT SET')
+logger.debug('INSTAGRAM_USERNAME set: %s', bool(USER))
+logger.debug('INSTAGRAM_PASSWORD set: %s', bool(PASS))
 if not USER or not PASS:
     logger.error('Missing Instagram credentials; aborting.')
     raise EnvironmentError('Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD')
 
-# ─── IMAGE GRAB ────────────────────────────────────────────────────────────────
+# ─── IMAGE GRAB VIA NETWORK INTERCEPT ───────────────────────────────────────────
 def grab_image():
     logger.info('Starting grab_image()')
     with sync_playwright() as p:
@@ -44,26 +45,34 @@ def grab_image():
         )
         page = ctx.new_page()
 
-        # Go directly into image-gen mode
         logger.debug('Navigating directly into Image mode')
         page.goto('https://gemini.google.com/?modal=images')
 
-        # Wait for the contenteditable prompt div
-        logger.debug('Waiting for prompt box (div[role="textbox"])')
+        # 1) Kick off the generation by typing into the prompt box
+        logger.debug('Waiting for prompt input')
         prompt_box = page.wait_for_selector('div[role="textbox"]', timeout=60_000)
         prompt_box.click()
-
         logger.debug('Typing prompt: %s', PROMPT)
         prompt_box.type(PROMPT)
         prompt_box.press("Enter")
 
-        logger.debug('Waiting for "Generating image…"')
-        page.get_by_text("Generating image…").wait_for(timeout=120_000)
+        # 2) Intercept the GraphQL response that carries the signed URI
+        logger.debug('Waiting for GraphQL response with image URI')
+        response = page.wait_for_response(
+            lambda r: r.request.method == "POST" and "generateImage" in r.url,
+            timeout=120_000
+        )
+        data = response.json()
+        signed_uri = data["data"]["generateImage"]["signedUri"]
+        logger.debug('Received signed URI: %s', signed_uri)
 
-        logger.debug('Locating result <img>')
-        img = page.locator("img[src^='blob:']").first
-        logger.debug('Screenshotting to %s', RAW_FILE)
-        img.screenshot(path=RAW_FILE)
+        # 3) Download the image bytes directly
+        logger.debug('Downloading image bytes')
+        img_resp = requests.get(signed_uri)
+        img_resp.raise_for_status()
+        with open(RAW_FILE, 'wb') as f:
+            f.write(img_resp.content)
+        logger.info('Saved raw image to %s', RAW_FILE)
 
         ctx.close()
     logger.info('Finished grab_image()')
@@ -73,18 +82,24 @@ def prep_image():
     logger.info('Starting prep_image()')
     img = Image.open(RAW_FILE)
     w, h = img.size
-    logger.debug('Original size: %dx%d', w, h)
+    logger.debug('Original image size: %dx%d', w, h)
+
+    # Remove watermark strip
     logger.debug('Cropping bottom %d px', CROP_BOTTOM)
     img = img.crop((0, 0, w, h - CROP_BOTTOM))
+
+    # Center square crop
     side = min(img.size)
     left = (img.width - side) // 2
     top  = (img.height - side) // 2
-    logger.debug('Center square crop: side=%d, left=%d, top=%d', side, left, top)
+    logger.debug('Center crop box: (%d, %d, %d, %d)', left, top, left+side, top+side)
     img = img.crop((left, top, left + side, top + side))
+
+    # Resize to 1080×1080
     logger.debug('Resizing to 1080×1080')
     img = img.resize((1080, 1080), Image.LANCZOS)
     img.save(OUT_FILE)
-    logger.info('Finished prep_image(); saved %s', OUT_FILE)
+    logger.info('Saved processed image to %s', OUT_FILE)
 
 # ─── INSTAGRAM POST ────────────────────────────────────────────────────────────
 def post_to_instagram():
@@ -109,7 +124,7 @@ def do_post():
     finally:
         logger.info('Leaving do_post()')
 
-# ─── SCHEDULER ─────────────────────────────────────────────────────────────────
+# ─── SCHEDULING ─────────────────────────────────────────────────────────────────
 def get_random_times(count):
     logger.debug('Generating %d random post times', count)
     times = set()
