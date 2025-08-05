@@ -1,12 +1,27 @@
-FROM python:3.10-slim
+# Use a slim Python base
+FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y curl unzip libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxdamage1 libxrandr2 libgbm1 libxshmfence1 libasound2 libxcomposite1 libxfixes3 libxrender1 libxext6 libx11-xcb1 libgtk-3-0 libx11-dev libxss1 libxinerama1 libgl1 libu2f-udev
+# Install system deps for Playwright
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      wget gnupg libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+      libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+      libxrandr2 libgbm1 libgtk-3-0 libasound2 && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install --with-deps
-
-COPY . /app
+# Set working dir
 WORKDIR /app
 
-CMD ["python3", "main.py"]
+# Copy and install Python deps
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    playwright install --with-deps chromium
+
+# Copy your bot code and persisted Playwright session
+COPY . .
+
+# Default to headless mode; override by setting HEADLESS=false
+ENV HEADLESS=true
+
+# Run the bot
+CMD ["python", "bot.py"]
