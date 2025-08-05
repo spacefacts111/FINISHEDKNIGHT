@@ -43,23 +43,28 @@ def grab_image():
             headless=HEADLESS
         )
         page = ctx.new_page()
-        logger.debug('Navigating to Gemini')
-        page.goto('https://gemini.google.com/')
-        logger.debug('Clicking Image mode button')
-        page.get_by_role("button", name="Image").click()
-        logger.debug('Waiting for prompt box')
-        prompt_box = page.get_by_role("textbox", name="Ask Gemini")
-        prompt_box.wait_for(timeout=60_000)
+
+        # Go directly into image-gen mode
+        logger.debug('Navigating directly into Image mode')
+        page.goto('https://gemini.google.com/?modal=images')
+
+        # Wait for the contenteditable prompt div
+        logger.debug('Waiting for prompt box (div[role="textbox"])')
+        prompt_box = page.wait_for_selector('div[role="textbox"]', timeout=60_000)
         prompt_box.click()
+
         logger.debug('Typing prompt: %s', PROMPT)
         prompt_box.type(PROMPT)
         prompt_box.press("Enter")
+
         logger.debug('Waiting for "Generating image…"')
         page.get_by_text("Generating image…").wait_for(timeout=120_000)
+
         logger.debug('Locating result <img>')
         img = page.locator("img[src^='blob:']").first
         logger.debug('Screenshotting to %s', RAW_FILE)
         img.screenshot(path=RAW_FILE)
+
         ctx.close()
     logger.info('Finished grab_image()')
 
@@ -99,7 +104,7 @@ def do_post():
         prep_image()
         post_to_instagram()
         logger.info('=== do_post() SUCCESS ===')
-    except Exception as e:
+    except Exception:
         logger.exception('=== do_post() ERROR ===')
     finally:
         logger.info('Leaving do_post()')
@@ -117,11 +122,9 @@ def get_random_times(count):
     return times_list
 
 def main_post():
-    # immediate test
     logger.info('Running immediate test post')
     do_post()
 
-    # schedule remaining posts
     times = get_random_times(POST_COUNT)
     logger.info('Scheduling up to %d posts at: %s', POST_COUNT, times)
     for t in times:
