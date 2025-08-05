@@ -2,3 +2,4 @@ instagrapi
 pillow
 playwright
 schedule
+requests
