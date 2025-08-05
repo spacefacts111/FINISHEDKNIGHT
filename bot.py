@@ -3,7 +3,6 @@ import random
 import time
 import schedule
 import logging
-import requests
 from instagrapi import Client
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -24,55 +23,49 @@ CROP_BOTTOM   = 50               # px to chop off bottom watermark
 USER_DATA_DIR = 'playwright_user_data'
 HEADLESS      = os.getenv('HEADLESS', 'true').lower() == 'true'
 POST_COUNT    = 3                # max posts per day
+IMAGE_TIMEOUT = 180_000          # wait up to 180s for image
 
 # ─── LOAD & CHECK ENV ──────────────────────────────────────────────────────────
 USER = os.getenv('INSTAGRAM_USERNAME')
 PASS = os.getenv('INSTAGRAM_PASSWORD')
-logger.debug('INSTAGRAM_USERNAME set: %s', bool(USER))
-logger.debug('INSTAGRAM_PASSWORD set: %s', bool(PASS))
 if not USER or not PASS:
     logger.error('Missing Instagram credentials; aborting.')
     raise EnvironmentError('Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD')
 
-# ─── IMAGE GRAB VIA NETWORK INTERCEPT ───────────────────────────────────────────
+# ─── IMAGE GRAB VIA SCREENSHOT ─────────────────────────────────────────────────
 def grab_image():
     logger.info('Starting grab_image()')
     with sync_playwright() as p:
-        logger.debug('Launching browser (headless=%s)', HEADLESS)
         ctx = p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
             headless=HEADLESS
         )
         page = ctx.new_page()
 
-        logger.debug('Navigating directly into Image mode')
-        page.goto('https://gemini.google.com/?modal=images')
+        logger.debug('Navigating to Gemini image UI (/u/1/app)')
+        page.goto('https://gemini.google.com/u/1/app')
 
-        # 1) Kick off the generation by typing into the prompt box
-        logger.debug('Waiting for prompt input')
-        prompt_box = page.wait_for_selector('div[role="textbox"]', timeout=60_000)
+        # wait for the labelled prompt box ("Ask Gemini")
+        logger.debug('Waiting for "Ask Gemini" prompt box')
+        prompt_box = page.get_by_role("textbox", name="Ask Gemini")
+        prompt_box.wait_for(timeout=60_000)
         prompt_box.click()
+
         logger.debug('Typing prompt: %s', PROMPT)
         prompt_box.type(PROMPT)
         prompt_box.press("Enter")
 
-        # 2) Intercept the GraphQL response that carries the signed URI
-        logger.debug('Waiting for GraphQL response with image URI')
-        response = page.wait_for_response(
-            lambda r: r.request.method == "POST" and "generateImage" in r.url,
-            timeout=120_000
-        )
-        data = response.json()
-        signed_uri = data["data"]["generateImage"]["signedUri"]
-        logger.debug('Received signed URI: %s', signed_uri)
+        # wait for “Generating image…” then the blob img
+        logger.debug('Waiting for "Generating image…"')
+        page.get_by_text("Generating image…").wait_for(timeout=120_000)
 
-        # 3) Download the image bytes directly
-        logger.debug('Downloading image bytes')
-        img_resp = requests.get(signed_uri)
-        img_resp.raise_for_status()
-        with open(RAW_FILE, 'wb') as f:
-            f.write(img_resp.content)
-        logger.info('Saved raw image to %s', RAW_FILE)
+        logger.debug('Waiting up to %dms for image element', IMAGE_TIMEOUT)
+        img_el = page.wait_for_selector("img[src^='blob:']", timeout=IMAGE_TIMEOUT)
+        img_el.wait_for(state="visible", timeout=IMAGE_TIMEOUT)
+        time.sleep(3)  # ensure full render
+
+        logger.debug('Screenshotting image element to %s', RAW_FILE)
+        img_el.screenshot(path=RAW_FILE)
 
         ctx.close()
     logger.info('Finished grab_image()')
@@ -84,19 +77,16 @@ def prep_image():
     w, h = img.size
     logger.debug('Original image size: %dx%d', w, h)
 
-    # Remove watermark strip
-    logger.debug('Cropping bottom %d px', CROP_BOTTOM)
+    # crop off watermark strip
     img = img.crop((0, 0, w, h - CROP_BOTTOM))
 
-    # Center square crop
+    # center-square crop
     side = min(img.size)
     left = (img.width - side) // 2
     top  = (img.height - side) // 2
-    logger.debug('Center crop box: (%d, %d, %d, %d)', left, top, left+side, top+side)
     img = img.crop((left, top, left + side, top + side))
 
-    # Resize to 1080×1080
-    logger.debug('Resizing to 1080×1080')
+    # resize to 1080×1080
     img = img.resize((1080, 1080), Image.LANCZOS)
     img.save(OUT_FILE)
     logger.info('Saved processed image to %s', OUT_FILE)
@@ -105,9 +95,7 @@ def prep_image():
 def post_to_instagram():
     logger.info('Starting post_to_instagram()')
     cl = Client()
-    logger.debug('Logging in as %s', USER)
     cl.login(USER, PASS)
-    logger.debug('Uploading %s', OUT_FILE)
     cl.photo_upload(OUT_FILE, caption='#liminalspace #vaporwave')
     logger.info('Finished post_to_instagram()')
 
@@ -124,34 +112,30 @@ def do_post():
     finally:
         logger.info('Leaving do_post()')
 
-# ─── SCHEDULING ─────────────────────────────────────────────────────────────────
+# ─── SCHEDULER ─────────────────────────────────────────────────────────────────
 def get_random_times(count):
-    logger.debug('Generating %d random post times', count)
     times = set()
     while len(times) < count:
         hour = random.randint(6, 22)
         minute = random.randint(0, 59)
         times.add(f"{hour:02d}:{minute:02d}")
-    times_list = sorted(times)
-    logger.debug('Random times chosen: %s', times_list)
-    return times_list
+    return sorted(times)
 
 def main_post():
-    logger.info('Running immediate test post')
+    logger.info('Immediate test post')
     do_post()
 
     times = get_random_times(POST_COUNT)
-    logger.info('Scheduling up to %d posts at: %s', POST_COUNT, times)
+    logger.info('Scheduling posts at: %s', times)
     for t in times:
         schedule.every().day.at(t).do(do_post)
 
-    logger.info('Entering scheduler loop')
+    logger.info('Scheduler loop start')
     while True:
         schedule.run_pending()
         time.sleep(30)
 
-# ─── ENTRY POINT ───────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    logger.info('=== Bot starting ===')
+    logging.info('Bot starting')
     main_post()
-    logger.info('=== Bot exiting ===')
+    logging.info('Bot exiting')
