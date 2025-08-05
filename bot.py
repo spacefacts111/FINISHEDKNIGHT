@@ -42,28 +42,31 @@ def grab_image():
         )
         page = ctx.new_page()
 
+        # 1) Navigate & wait until network is idle
         logger.debug('Navigating to Gemini image UI (/u/1/app)')
-        page.goto('https://gemini.google.com/u/1/app')
+        page.goto('https://gemini.google.com/u/1/app', wait_until='networkidle')
 
-        # wait for the labelled prompt box ("Ask Gemini")
-        logger.debug('Waiting for "Ask Gemini" prompt box')
-        prompt_box = page.get_by_role("textbox", name="Ask Gemini")
-        prompt_box.wait_for(timeout=60_000)
+        # 2) Wait for the generic textbox prompt to appear
+        logger.debug('Waiting for prompt box (div[role="textbox"])')
+        prompt_box = page.wait_for_selector('div[role="textbox"]', timeout=60_000)
         prompt_box.click()
 
+        # 3) Type in the prompt and submit
         logger.debug('Typing prompt: %s', PROMPT)
         prompt_box.type(PROMPT)
         prompt_box.press("Enter")
 
-        # wait for “Generating image…” then the blob img
+        # 4) Wait for "Generating image…" to confirm kickoff
         logger.debug('Waiting for "Generating image…"')
-        page.get_by_text("Generating image…").wait_for(timeout=120_000)
+        page.wait_for_selector('text=Generating image…', timeout=120_000)
 
-        logger.debug('Waiting up to %dms for image element', IMAGE_TIMEOUT)
+        # 5) Wait up to IMAGE_TIMEOUT for the blob <img> to appear & be visible
+        logger.debug('Waiting for generated image element')
         img_el = page.wait_for_selector("img[src^='blob:']", timeout=IMAGE_TIMEOUT)
         img_el.wait_for(state="visible", timeout=IMAGE_TIMEOUT)
-        time.sleep(3)  # ensure full render
+        time.sleep(3)  # ensure final render
 
+        # 6) Screenshot that element
         logger.debug('Screenshotting image element to %s', RAW_FILE)
         img_el.screenshot(path=RAW_FILE)
 
@@ -77,16 +80,18 @@ def prep_image():
     w, h = img.size
     logger.debug('Original image size: %dx%d', w, h)
 
-    # crop off watermark strip
+    # 1) Remove bottom watermark strip
+    logger.debug('Cropping bottom %d px', CROP_BOTTOM)
     img = img.crop((0, 0, w, h - CROP_BOTTOM))
 
-    # center-square crop
+    # 2) Center-square crop
     side = min(img.size)
     left = (img.width - side) // 2
     top  = (img.height - side) // 2
     img = img.crop((left, top, left + side, top + side))
 
-    # resize to 1080×1080
+    # 3) Resize to 1080×1080 for Instagram
+    logger.debug('Resizing to 1080×1080')
     img = img.resize((1080, 1080), Image.LANCZOS)
     img.save(OUT_FILE)
     logger.info('Saved processed image to %s', OUT_FILE)
@@ -136,6 +141,6 @@ def main_post():
         time.sleep(30)
 
 if __name__ == '__main__':
-    logging.info('Bot starting')
+    logger.info('Bot starting')
     main_post()
-    logging.info('Bot exiting')
+    logger.info('Bot exiting')
